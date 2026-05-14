@@ -430,7 +430,7 @@ func DefaultCommands(app *App) []Command {
 			ID:           "edit_labels",
 			Title:        "Edit issue labels",
 			Keywords:     []string{"labels", "label", "tag", "tags"},
-			ShortcutRune: 'g', // 'g' for tags (since 'l' is used for vim navigation)
+			ShortcutRune: 'L', // 'L' for Labels ('g' is reserved for gg navigation, 'l' is vim nav)
 			Run: func(a *App) {
 				issue := a.GetSelectedIssue()
 				if issue == nil {

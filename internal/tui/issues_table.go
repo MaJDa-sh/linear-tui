@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
@@ -158,6 +159,21 @@ func (a *App) buildIssuesTable(title string, section IssuesSection) *tview.Table
 
 // setupIssuesTableNavigation sets up keyboard navigation for an issues table with cross-section support.
 func (a *App) setupIssuesTableNavigation(table *tview.Table, section IssuesSection) {
+	// moveAndSelect moves the table cursor to the given row and triggers issue selection if applicable.
+	moveAndSelect := func(row int, sec IssuesSection) {
+		t := a.myIssuesTable
+		if sec == IssuesSectionOther {
+			t = a.otherIssuesTable
+		}
+		t.Select(row, 0)
+		if issueRow := a.getIssueRowForSection(row, sec); issueRow != nil && !issueRow.IsStageHeader {
+			if issue := a.getIssueFromRowForSection(row, sec); issue != nil {
+				a.onIssueSelected(*issue)
+			}
+		}
+		a.activeIssuesSection = sec
+	}
+
 	table.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Key() {
 		case tcell.KeyRune:
@@ -165,18 +181,15 @@ func (a *App) setupIssuesTableNavigation(table *tview.Table, section IssuesSecti
 			case 'j':
 				row, _ := table.GetSelection()
 				if row < table.GetRowCount()-1 {
-					table.Select(row+1, 0)
-					if issue := a.getIssueFromRowForSection(row+1, section); issue != nil {
-						a.onIssueSelected(*issue)
-						a.activeIssuesSection = section
-					}
+					moveAndSelect(row+1, section)
 				} else if section == IssuesSectionMy && len(a.otherIssueRows) > 0 {
-					// At bottom of this section - try to move to next section
-					// Move to Other Issues table
+					// At bottom of My Issues — move to Other Issues.
 					a.activeIssuesSection = IssuesSectionOther
 					a.otherIssuesTable.Select(1, 0)
-					if issue := a.getIssueFromRowForSection(1, IssuesSectionOther); issue != nil {
-						a.onIssueSelected(*issue)
+					if issueRow := a.getIssueRowForSection(1, IssuesSectionOther); issueRow != nil && !issueRow.IsStageHeader {
+						if issue := a.getIssueFromRowForSection(1, IssuesSectionOther); issue != nil {
+							a.onIssueSelected(*issue)
+						}
 					}
 					a.updateFocus()
 				}
@@ -184,52 +197,26 @@ func (a *App) setupIssuesTableNavigation(table *tview.Table, section IssuesSecti
 			case 'k':
 				row, _ := table.GetSelection()
 				if row > 1 {
-					table.Select(row-1, 0)
-					if issue := a.getIssueFromRowForSection(row-1, section); issue != nil {
-						a.onIssueSelected(*issue)
-						a.activeIssuesSection = section
-					}
+					moveAndSelect(row-1, section)
 				} else if section == IssuesSectionOther && len(a.myIssueRows) > 0 {
-					// At top of this section - try to move to previous section
-					// Move to My Issues table
+					// At top of Other Issues — move to My Issues.
 					a.activeIssuesSection = IssuesSectionMy
 					lastRow := len(a.myIssueRows)
 					a.myIssuesTable.Select(lastRow, 0)
-					if issue := a.getIssueFromRowForSection(lastRow, IssuesSectionMy); issue != nil {
-						a.onIssueSelected(*issue)
+					if issueRow := a.getIssueRowForSection(lastRow, IssuesSectionMy); issueRow != nil && !issueRow.IsStageHeader {
+						if issue := a.getIssueFromRowForSection(lastRow, IssuesSectionMy); issue != nil {
+							a.onIssueSelected(*issue)
+						}
 					}
 					a.updateFocus()
 				}
 				return nil
-			case 'g':
-				// Go to top of current section
-				table.Select(1, 0)
-				if issue := a.getIssueFromRowForSection(1, section); issue != nil {
-					a.onIssueSelected(*issue)
-					a.activeIssuesSection = section
-				}
-				return nil
-			case 'G':
-				// Go to bottom of current section
-				var rows []IssueRow
-				switch section {
-				case IssuesSectionMy:
-					rows = a.myIssueRows
-				case IssuesSectionOther:
-					rows = a.otherIssueRows
-				}
-				if len(rows) > 0 {
-					lastRow := len(rows)
-					table.Select(lastRow, 0)
-					if issue := a.getIssueFromRowForSection(lastRow, section); issue != nil {
-						a.onIssueSelected(*issue)
-						a.activeIssuesSection = section
-					}
-				}
-				return nil
 			case 'l':
-				// Expand current parent issue
+				// Expand current parent issue (or ignore if on stage header).
 				row, _ := table.GetSelection()
+				if issueRow := a.getIssueRowForSection(row, section); issueRow != nil && issueRow.IsStageHeader {
+					return nil
+				}
 				if issue := a.getIssueFromRowForSection(row, section); issue != nil {
 					if len(issue.Children) > 0 && !a.expandedState[issue.ID] {
 						a.toggleIssueExpanded(issue.ID)
@@ -238,15 +225,16 @@ func (a *App) setupIssuesTableNavigation(table *tview.Table, section IssuesSecti
 				}
 				return nil
 			case 'h':
-				// Collapse current parent issue, or go to parent if on child
+				// Collapse current parent issue, or go to parent if on child.
 				row, _ := table.GetSelection()
+				if issueRow := a.getIssueRowForSection(row, section); issueRow != nil && issueRow.IsStageHeader {
+					return nil
+				}
 				if issue := a.getIssueFromRowForSection(row, section); issue != nil {
 					if len(issue.Children) > 0 && a.expandedState[issue.ID] {
-						// Collapse this parent
 						a.toggleIssueExpanded(issue.ID)
 						a.activeIssuesSection = section
 					} else if issue.Parent != nil {
-						// Navigate to parent - may be in different section
 						parentRow := a.getRowForIssueInSection(issue.Parent.ID, IssuesSectionMy)
 						if parentRow > 0 {
 							a.activeIssuesSection = IssuesSectionMy
@@ -270,8 +258,14 @@ func (a *App) setupIssuesTableNavigation(table *tview.Table, section IssuesSecti
 				}
 				return nil
 			case ' ':
-				// Space toggles expand/collapse
+				// Space toggles stage collapse or issue expand/collapse.
 				row, _ := table.GetSelection()
+				if issueRow := a.getIssueRowForSection(row, section); issueRow != nil {
+					if issueRow.IsStageHeader {
+						a.toggleStageCollapsed(issueRow.Stage)
+						return nil
+					}
+				}
 				if issue := a.getIssueFromRowForSection(row, section); issue != nil {
 					if len(issue.Children) > 0 {
 						a.toggleIssueExpanded(issue.ID)
@@ -282,19 +276,26 @@ func (a *App) setupIssuesTableNavigation(table *tview.Table, section IssuesSecti
 			}
 		case tcell.KeyEnter:
 			row, _ := table.GetSelection()
+
+			// Handle stage header toggle.
+			if issueRow := a.getIssueRowForSection(row, section); issueRow != nil && issueRow.IsStageHeader {
+				a.toggleStageCollapsed(issueRow.Stage)
+				return nil
+			}
+
 			issue := a.getIssueFromRowForSection(row, section)
 			if issue == nil {
 				return nil
 			}
 
-			// If issue has children, toggle expand/collapse
+			// If issue has children, toggle expand/collapse.
 			if len(issue.Children) > 0 {
 				a.toggleIssueExpanded(issue.ID)
 				a.activeIssuesSection = section
 				return nil
 			}
 
-			// Otherwise, focus on details
+			// Otherwise, focus on details.
 			a.onIssueSelected(*issue)
 			a.focusedPane = FocusDetails
 			a.updateFocus()
@@ -302,17 +303,14 @@ func (a *App) setupIssuesTableNavigation(table *tview.Table, section IssuesSecti
 		case tcell.KeyDown:
 			row, _ := table.GetSelection()
 			if row < table.GetRowCount()-1 {
-				table.Select(row+1, 0)
-				if issue := a.getIssueFromRowForSection(row+1, section); issue != nil {
-					a.onIssueSelected(*issue)
-					a.activeIssuesSection = section
-				}
+				moveAndSelect(row+1, section)
 			} else if section == IssuesSectionMy && len(a.otherIssueRows) > 0 {
-				// At bottom - try to move to next section
 				a.activeIssuesSection = IssuesSectionOther
 				a.otherIssuesTable.Select(1, 0)
-				if issue := a.getIssueFromRowForSection(1, IssuesSectionOther); issue != nil {
-					a.onIssueSelected(*issue)
+				if issueRow := a.getIssueRowForSection(1, IssuesSectionOther); issueRow != nil && !issueRow.IsStageHeader {
+					if issue := a.getIssueFromRowForSection(1, IssuesSectionOther); issue != nil {
+						a.onIssueSelected(*issue)
+					}
 				}
 				a.updateFocus()
 			}
@@ -320,18 +318,15 @@ func (a *App) setupIssuesTableNavigation(table *tview.Table, section IssuesSecti
 		case tcell.KeyUp:
 			row, _ := table.GetSelection()
 			if row > 1 {
-				table.Select(row-1, 0)
-				if issue := a.getIssueFromRowForSection(row-1, section); issue != nil {
-					a.onIssueSelected(*issue)
-					a.activeIssuesSection = section
-				}
+				moveAndSelect(row-1, section)
 			} else if section == IssuesSectionOther && len(a.myIssueRows) > 0 {
-				// At top - try to move to previous section
 				a.activeIssuesSection = IssuesSectionMy
 				lastRow := len(a.myIssueRows)
 				a.myIssuesTable.Select(lastRow, 0)
-				if issue := a.getIssueFromRowForSection(lastRow, IssuesSectionMy); issue != nil {
-					a.onIssueSelected(*issue)
+				if issueRow := a.getIssueRowForSection(lastRow, IssuesSectionMy); issueRow != nil && !issueRow.IsStageHeader {
+					if issue := a.getIssueFromRowForSection(lastRow, IssuesSectionMy); issue != nil {
+						a.onIssueSelected(*issue)
+					}
 				}
 				a.updateFocus()
 			}
@@ -354,6 +349,22 @@ func (a *App) getIssueFromRowForSection(row int, section IssuesSection) *lineara
 		idToIssue = a.otherIDToIssue
 	}
 	return getIssueFromRowModel(row, rows, idToIssue)
+}
+
+// getIssueRowForSection returns the raw IssueRow (including stage headers) for a given table row.
+func (a *App) getIssueRowForSection(row int, section IssuesSection) *IssueRow {
+	var rows []IssueRow
+	switch section {
+	case IssuesSectionMy:
+		rows = a.myIssueRows
+	case IssuesSectionOther:
+		rows = a.otherIssueRows
+	}
+	rowIndex := row - 1 // Account for header row
+	if rowIndex < 0 || rowIndex >= len(rows) {
+		return nil
+	}
+	return &rows[rowIndex]
 }
 
 // getRowForIssueInSection returns the table row for a given issue ID in the specified section.
@@ -407,6 +418,52 @@ func renderIssuesTableModel(table *tview.Table, rows []IssueRow, idToIssue map[s
 	// Add issue rows using the hierarchical structure
 	for i, issueRow := range rows {
 		row := i + 1
+
+		// Render stage header rows differently.
+		if issueRow.IsStageHeader {
+			icon := IconCollapsed
+			// We need to know if this stage is collapsed — check by looking ahead.
+			// Since we only have the rows (not collapsedStages map here), we infer from
+			// whether the next row is also a stage header or there are no issue rows following.
+			// Simpler: store IsExpanded on stage header rows (we use IsExpanded for this).
+			// Actually IsExpanded is not set for stage headers; use the absence of subsequent issue rows.
+			// For display: if the next row exists and is NOT a stage header, we're expanded.
+			nextIsIssue := i+1 < len(rows) && !rows[i+1].IsStageHeader
+			if nextIsIssue || (i+1 >= len(rows)) {
+				// Expanded if there are issue rows after (or it's the last header with no issues)
+				// Check more carefully: if no issues follow before the next header, it's collapsed or empty.
+				// Walk forward to see if any non-header row exists before next header.
+				hasIssueRows := false
+				for j := i + 1; j < len(rows); j++ {
+					if rows[j].IsStageHeader {
+						break
+					}
+					hasIssueRows = true
+					break
+				}
+				if hasIssueRows {
+					icon = IconExpanded
+				}
+			}
+
+			stageText := fmt.Sprintf(" %s  %s  (%d)", icon, issueRow.Stage, issueRow.StageCount)
+			stageStyle := tcell.StyleDefault.
+				Foreground(theme.HeaderText).
+				Background(theme.HeaderBg).
+				Bold(true)
+
+			table.SetCell(row, 0, tview.NewTableCell(stageText).
+				SetStyle(stageStyle).
+				SetSelectable(true).
+				SetAlign(tview.AlignLeft))
+			for col := 1; col <= 4; col++ {
+				table.SetCell(row, col, tview.NewTableCell("").
+					SetStyle(stageStyle).
+					SetSelectable(false).
+					SetAlign(tview.AlignLeft))
+			}
+			continue
+		}
 
 		issue, ok := idToIssue[issueRow.IssueID]
 		if !ok || issue == nil {
@@ -491,9 +548,16 @@ func renderIssuesTableModel(table *tview.Table, rows []IssueRow, idToIssue map[s
 			SetAlign(tview.AlignLeft))
 	}
 
-	// Select the specified issue or first row
+	// Select the specified issue or first non-header row
 	if len(rows) > 0 {
-		selectedRow := 1 // Default to first issue (row 1, row 0 is header)
+		// Default: find first non-stage-header row
+		selectedRow := 1
+		for i, row := range rows {
+			if !row.IsStageHeader {
+				selectedRow = i + 1 // +1 because row 0 is the column header
+				break
+			}
+		}
 		if selectedIssueID != "" {
 			// Find the row with matching issue ID
 			for i, row := range rows {
