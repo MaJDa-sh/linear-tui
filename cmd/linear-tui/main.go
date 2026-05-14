@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/joho/godotenv"
 	"github.com/roeyazroel/linear-tui/internal/config"
 	"github.com/roeyazroel/linear-tui/internal/linearapi"
 	"github.com/roeyazroel/linear-tui/internal/logger"
@@ -16,6 +17,9 @@ func main() {
 		fmt.Println(VersionInfo())
 		os.Exit(0)
 	}
+
+	// Load .env file if present (silently ignore if not found)
+	_ = godotenv.Load()
 
 	// Load configuration from settings file + API key
 	settingsPath, err := config.ConfigFilePath()
