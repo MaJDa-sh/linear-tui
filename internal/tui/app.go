@@ -116,6 +116,17 @@ type App struct {
 	// Details pane sub-view focus
 	focusedDetailsView     bool // false = description, true = comments
 	detailsCommentsVisible bool // Tracks whether comments view is shown
+
+	// Cursor/visual mode for details view
+	detailsCursorMode       bool     // Whether cursor mode is active
+	detailsCursorLine       int      // Current cursor line (0-indexed)
+	detailsVisualMode       bool     // Whether visual (selection) mode is active
+	detailsVisualStart      int      // Start line of visual selection (-1 if not in visual mode)
+	detailsTextLines        []string // Plain text lines of the issue description pane
+	detailsCommentsLines    []string // Plain text lines of the comments pane
+	detailsCursorOnComments bool     // Whether cursor mode is active on the comments pane
+	detailsPendingG         bool     // Tracks first 'g' press for gg sequence in details view
+	issuesPendingG     bool     // Tracks first 'g' press for gg sequence in issues table
 }
 
 // FocusTarget indicates which pane has focus.
@@ -153,6 +164,7 @@ func NewApp(api *linearapi.Client, cfg config.Config, templates []config.AgentPr
 		myIDToIssue:          make(map[string]*linearapi.Issue),
 		otherIDToIssue:       make(map[string]*linearapi.Issue),
 		activeIssuesSection:  IssuesSectionOther, // Default to Other section
+		detailsVisualStart:   -1,
 		agentPromptTemplates: templates,
 	}
 
@@ -803,6 +815,11 @@ func (a *App) handleNavigationKey(event *tcell.EventKey) *tcell.EventKey {
 
 // handleIssuesKey handles keyboard input when issues pane is focused.
 func (a *App) handleIssuesKey(event *tcell.EventKey) *tcell.EventKey {
+	// Clear pending-G on any non-g key.
+	if event.Key() != tcell.KeyRune || event.Rune() != 'g' {
+		a.issuesPendingG = false
+	}
+
 	switch event.Key() {
 	case tcell.KeyLeft:
 		a.focusedPane = FocusNavigation
@@ -826,6 +843,49 @@ func (a *App) handleIssuesKey(event *tcell.EventKey) *tcell.EventKey {
 			a.focusedDetailsView = false // Start with description
 			a.updateFocus()
 			return nil
+		case 'g':
+			if a.issuesPendingG {
+				// gg — go to top of the active issues table.
+				a.issuesPendingG = false
+				table := a.activeIssuesTable()
+				if table != nil {
+					table.Select(1, 0)
+					// Find first non-header row and select it.
+					rows := a.activeIssueRows()
+					for i, row := range rows {
+						if !row.IsStageHeader {
+							table.Select(i+1, 0)
+							if issue := a.getIssueFromRowForSection(i+1, a.activeIssuesSection); issue != nil {
+								a.onIssueSelected(*issue)
+							}
+							break
+						}
+					}
+				}
+			} else {
+				a.issuesPendingG = true
+			}
+			return nil
+		case 'G':
+			// Go to bottom of the active issues table.
+			a.issuesPendingG = false
+			table := a.activeIssuesTable()
+			rows := a.activeIssueRows()
+			if table != nil && len(rows) > 0 {
+				lastRow := len(rows)
+				table.Select(lastRow, 0)
+				// Find the last non-header row.
+				for i := len(rows) - 1; i >= 0; i-- {
+					if !rows[i].IsStageHeader {
+						table.Select(i+1, 0)
+						if issue := a.getIssueFromRowForSection(i+1, a.activeIssuesSection); issue != nil {
+							a.onIssueSelected(*issue)
+						}
+						break
+					}
+				}
+			}
+			return nil
 		}
 		// Handle command shortcuts (plain letters) - skip navigation keys
 		if r != 'j' && r != 'k' { // j/k are handled by table for up/down
@@ -840,21 +900,186 @@ func (a *App) handleIssuesKey(event *tcell.EventKey) *tcell.EventKey {
 	return event
 }
 
+// activeIssuesTable returns the currently focused issues table.
+func (a *App) activeIssuesTable() *tview.Table {
+	if a.activeIssuesSection == IssuesSectionMy {
+		return a.myIssuesTable
+	}
+	return a.otherIssuesTable
+}
+
+// activeIssueRows returns the rows for the currently active issues section.
+func (a *App) activeIssueRows() []IssueRow {
+	if a.activeIssuesSection == IssuesSectionMy {
+		return a.myIssueRows
+	}
+	return a.otherIssueRows
+}
+
 // handleDetailsKey handles keyboard input when details pane is focused.
 func (a *App) handleDetailsKey(event *tcell.EventKey) *tcell.EventKey {
+	// In cursor/visual mode, handle cursor navigation keys.
+	if a.detailsCursorMode {
+		return a.handleDetailsCursorKey(event)
+	}
+
+	// Clear pending-G on any non-g key.
+	if event.Key() != tcell.KeyRune || event.Rune() != 'g' {
+		a.detailsPendingG = false
+	}
+
 	switch event.Key() {
 	case tcell.KeyLeft:
 		a.focusedPane = FocusIssues
 		a.updateFocus()
 		return nil
+	case tcell.KeyEscape:
+		// Exit cursor mode if somehow active.
+		a.detailsCursorMode = false
+		return nil
 	case tcell.KeyRune:
-		if event.Rune() == 'h' {
+		switch event.Rune() {
+		case 'h':
 			a.focusedPane = FocusIssues
 			a.updateFocus()
+			return nil
+		case 'g':
+			if a.detailsPendingG {
+				// gg — scroll to top.
+				a.detailsPendingG = false
+				activeView := a.activeDetailsView()
+				if activeView != nil {
+					activeView.ScrollToBeginning()
+				}
+			} else {
+				a.detailsPendingG = true
+			}
+			return nil
+		case 'G':
+			// Scroll to bottom.
+			a.detailsPendingG = false
+			activeView := a.activeDetailsView()
+			if activeView != nil {
+				activeView.ScrollToEnd()
+			}
+			return nil
+		case 'v':
+			// Enter cursor/visual mode on the currently focused sub-view.
+			a.detailsCursorOnComments = a.focusedDetailsView && a.detailsCommentsVisible
+			a.detailsCursorMode = true
+			a.detailsVisualMode = false
+			a.detailsVisualStart = -1
+			a.detailsCursorLine = 0
+			a.renderDetailsCursorMode()
+			return nil
+		case 'e':
+			// Open current pane content in $EDITOR.
+			onComments := a.focusedDetailsView && a.detailsCommentsVisible
+			a.openInEditor(onComments)
 			return nil
 		}
 	}
 	return event
+}
+
+// activeDetailsView returns the currently focused TextView in the details pane.
+func (a *App) activeDetailsView() *tview.TextView {
+	if a.focusedDetailsView && a.detailsCommentsVisible {
+		return a.detailsCommentsView
+	}
+	return a.detailsDescriptionView
+}
+
+// handleDetailsCursorKey handles key events when cursor/visual mode is active in the details pane.
+func (a *App) handleDetailsCursorKey(event *tcell.EventKey) *tcell.EventKey {
+	// Clear pending-G on any non-g key.
+	if event.Key() != tcell.KeyRune || event.Rune() != 'g' {
+		a.detailsPendingG = false
+	}
+
+	maxLine := len(a.activeCursorLines()) - 1
+	if maxLine < 0 {
+		maxLine = 0
+	}
+
+	switch event.Key() {
+	case tcell.KeyEscape:
+		// Exit cursor/visual mode, restore normal display.
+		a.detailsCursorMode = false
+		a.detailsVisualMode = false
+		a.detailsVisualStart = -1
+		a.updateDetailsView()
+		return nil
+	case tcell.KeyRune:
+		switch event.Rune() {
+		case 'j':
+			if a.detailsCursorLine < maxLine {
+				a.detailsCursorLine++
+				a.renderDetailsCursorMode()
+			}
+			return nil
+		case 'k':
+			if a.detailsCursorLine > 0 {
+				a.detailsCursorLine--
+				a.renderDetailsCursorMode()
+			}
+			return nil
+		case 'g':
+			if a.detailsPendingG {
+				// gg — go to first line.
+				a.detailsPendingG = false
+				a.detailsCursorLine = 0
+				a.renderDetailsCursorMode()
+			} else {
+				a.detailsPendingG = true
+			}
+			return nil
+		case 'G':
+			// Go to last line.
+			a.detailsCursorLine = maxLine
+			a.renderDetailsCursorMode()
+			return nil
+		case 'v':
+			// Toggle visual (selection) mode.
+			if a.detailsVisualMode {
+				a.detailsVisualMode = false
+				a.detailsVisualStart = -1
+			} else {
+				a.detailsVisualMode = true
+				a.detailsVisualStart = a.detailsCursorLine
+			}
+			a.renderDetailsCursorMode()
+			return nil
+		case 'y':
+			// Copy selection (or current line) to clipboard.
+			a.copyDetailsSelection()
+			return nil
+		case 'e':
+			// Open current pane content in $EDITOR.
+			a.openInEditor(a.detailsCursorOnComments)
+			return nil
+		case 'q':
+			// Exit cursor mode (alternative to Escape).
+			a.detailsCursorMode = false
+			a.detailsVisualMode = false
+			a.detailsVisualStart = -1
+			a.updateDetailsView()
+			return nil
+		}
+	case tcell.KeyDown:
+		if a.detailsCursorLine < maxLine {
+			a.detailsCursorLine++
+			a.renderDetailsCursorMode()
+		}
+		return nil
+	case tcell.KeyUp:
+		if a.detailsCursorLine > 0 {
+			a.detailsCursorLine--
+			a.renderDetailsCursorMode()
+		}
+		return nil
+	}
+	return nil
 }
 
 // handlePaletteKey handles keyboard input when palette is open.
@@ -1621,6 +1846,60 @@ func (a *App) toggleIssueExpanded(issueID string) {
 		a.activeIssuesSection = IssuesSectionMy
 	} else if _, ok := a.otherIDToIssue[issueID]; ok {
 		selectedOtherIssueID = issueID
+		a.activeIssuesSection = IssuesSectionOther
+	}
+
+	renderIssuesTableModel(a.myIssuesTable, a.myIssueRows, a.myIDToIssue, selectedMyIssueID, a.theme)
+	renderIssuesTableModel(a.otherIssuesTable, a.otherIssueRows, a.otherIDToIssue, selectedOtherIssueID, a.theme)
+}
+
+// toggleStageCollapsed toggles the collapsed state of a workflow stage group.
+func (a *App) toggleStageCollapsed(stage string) {
+	if a.collapsedStages[stage] {
+		delete(a.collapsedStages, stage)
+	} else {
+		a.collapsedStages[stage] = true
+	}
+
+	// Preserve the currently selected issue.
+	var targetIssueID string
+	a.issuesMu.RLock()
+	if a.selectedIssue != nil {
+		targetIssueID = a.selectedIssue.ID
+	}
+	issues := a.issues
+	a.issuesMu.RUnlock()
+
+	currentUserID := ""
+	if a.currentUser != nil {
+		currentUserID = a.currentUser.ID
+	}
+	myIssues, otherIssues := splitIssuesByAssignee(issues, currentUserID)
+	a.myIssueRows, a.myIDToIssue = BuildIssueRowsGrouped(myIssues, a.expandedState, a.collapsedStages)
+	a.otherIssueRows, a.otherIDToIssue = BuildIssueRowsGrouped(otherIssues, a.expandedState, a.collapsedStages)
+
+	// Legacy: keep old fields for backward compatibility.
+	a.issueRows = make([]IssueRow, 0, len(a.myIssueRows)+len(a.otherIssueRows))
+	a.issueRows = append(a.issueRows, a.myIssueRows...)
+	a.issueRows = append(a.issueRows, a.otherIssueRows...)
+	a.idToIssue = make(map[string]*linearapi.Issue)
+	for k, v := range a.myIDToIssue {
+		a.idToIssue[k] = v
+	}
+	for k, v := range a.otherIDToIssue {
+		a.idToIssue[k] = v
+	}
+
+	// Update layout.
+	a.updateIssuesColumnLayout()
+
+	// Re-render both tables, keeping selection on the same issue or the stage header.
+	var selectedMyIssueID, selectedOtherIssueID string
+	if _, ok := a.myIDToIssue[targetIssueID]; ok {
+		selectedMyIssueID = targetIssueID
+		a.activeIssuesSection = IssuesSectionMy
+	} else if _, ok := a.otherIDToIssue[targetIssueID]; ok {
+		selectedOtherIssueID = targetIssueID
 		a.activeIssuesSection = IssuesSectionOther
 	}
 

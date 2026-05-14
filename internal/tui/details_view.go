@@ -2,11 +2,14 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+	"github.com/roeyazroel/linear-tui/internal/linearapi"
 )
 
 // markdownRenderer is a shared glamour renderer for markdown content.
@@ -253,4 +256,269 @@ func (a *App) updateDetailsView() {
 	if a.focusedPane == FocusDetails && !a.detailsCommentsVisible {
 		a.updateFocus()
 	}
+
+	// Populate plain text lines for cursor mode.
+	a.detailsTextLines = buildDetailsTextLines(issue)
+	a.detailsCommentsLines = buildCommentsTextLines(issue)
+	// Reset cursor mode state when issue changes.
+	if a.detailsCursorMode {
+		a.detailsCursorMode = false
+		a.detailsVisualMode = false
+		a.detailsVisualStart = -1
+		a.detailsCursorLine = 0
+		a.detailsCursorOnComments = false
+	}
 }
+
+// buildDetailsTextLines builds a slice of plain-text lines from an issue for cursor mode.
+func buildDetailsTextLines(issue *linearapi.Issue) []string {
+	if issue == nil {
+		return nil
+	}
+	var lines []string
+	lines = append(lines, fmt.Sprintf("[%s] %s", issue.Identifier, issue.Title))
+	lines = append(lines, "")
+	lines = append(lines, fmt.Sprintf("State:    %s", issue.State))
+	assignee := issue.Assignee
+	if assignee == "" {
+		assignee = "Unassigned"
+	}
+	lines = append(lines, fmt.Sprintf("Assignee: %s", assignee))
+	lines = append(lines, fmt.Sprintf("Priority: %d", issue.Priority))
+	if len(issue.Labels) > 0 {
+		labelNames := make([]string, len(issue.Labels))
+		for i, lbl := range issue.Labels {
+			labelNames[i] = lbl.Name
+		}
+		lines = append(lines, fmt.Sprintf("Labels:   %s", strings.Join(labelNames, ", ")))
+	}
+	if issue.Parent != nil {
+		lines = append(lines, fmt.Sprintf("Parent:   %s - %s", issue.Parent.Identifier, issue.Parent.Title))
+	}
+	lines = append(lines, "")
+	lines = append(lines, strings.Repeat("─", 40))
+	lines = append(lines, "")
+	if issue.Description != "" {
+		for _, line := range strings.Split(issue.Description, "\n") {
+			lines = append(lines, line)
+		}
+	} else {
+		lines = append(lines, "(no description)")
+	}
+	return lines
+}
+
+// buildCommentsTextLines builds plain-text lines from the issue comments for cursor mode.
+func buildCommentsTextLines(issue *linearapi.Issue) []string {
+	if issue == nil || len(issue.Comments) == 0 {
+		return []string{"(no comments)"}
+	}
+	var lines []string
+	for i, comment := range issue.Comments {
+		author := comment.Author.DisplayName
+		if author == "" {
+			author = comment.Author.Name
+		}
+		if comment.Author.IsMe {
+			author += " (me)"
+		}
+		timeStr := comment.CreatedAt.Format("Jan 2, 2006 3:04 PM")
+		if !comment.UpdatedAt.Equal(comment.CreatedAt) {
+			timeStr += " (edited)"
+		}
+		lines = append(lines, fmt.Sprintf("%s  —  %s", author, timeStr))
+		lines = append(lines, "")
+		for _, bodyLine := range strings.Split(comment.Body, "\n") {
+			lines = append(lines, bodyLine)
+		}
+		if i < len(issue.Comments)-1 {
+			lines = append(lines, "")
+			lines = append(lines, strings.Repeat("─", 40))
+			lines = append(lines, "")
+		}
+	}
+	return lines
+}
+
+// activeCursorLines returns the text lines for the currently active cursor mode pane.
+func (a *App) activeCursorLines() []string {
+	if a.detailsCursorOnComments {
+		return a.detailsCommentsLines
+	}
+	return a.detailsTextLines
+}
+
+// activeCursorView returns the TextView for the currently active cursor mode pane.
+func (a *App) activeCursorView() *tview.TextView {
+	if a.detailsCursorOnComments {
+		return a.detailsCommentsView
+	}
+	return a.detailsDescriptionView
+}
+
+// renderDetailsCursorMode re-renders the active details pane in cursor/visual mode
+// with the cursor line and selection highlighted.
+func (a *App) renderDetailsCursorMode() {
+	view := a.activeCursorView()
+	if view == nil {
+		return
+	}
+
+	lines := a.activeCursorLines()
+	if len(lines) == 0 {
+		return
+	}
+
+	// Clamp cursor line.
+	if a.detailsCursorLine >= len(lines) {
+		a.detailsCursorLine = len(lines) - 1
+	}
+	if a.detailsCursorLine < 0 {
+		a.detailsCursorLine = 0
+	}
+
+	// Determine selection range.
+	selStart, selEnd := -1, -1
+	if a.detailsVisualMode && a.detailsVisualStart >= 0 {
+		selStart = a.detailsVisualStart
+		selEnd = a.detailsCursorLine
+		if selStart > selEnd {
+			selStart, selEnd = selEnd, selStart
+		}
+	}
+
+	// Build colored content.
+	var sb strings.Builder
+	for i, line := range lines {
+		// Escape tview color tags in the plain text.
+		escaped := strings.ReplaceAll(line, "[", "[[")
+
+		if i == a.detailsCursorLine && !(selStart <= i && i <= selEnd) {
+			// Cursor line (not in selection) — reverse video.
+			sb.WriteString("[::r]")
+			sb.WriteString(escaped)
+			sb.WriteString("[-:-:-]\n")
+		} else if selStart >= 0 && selStart <= i && i <= selEnd {
+			// Selected lines — yellow bold.
+			if i == a.detailsCursorLine {
+				sb.WriteString("[black:yellow:b]")
+			} else {
+				sb.WriteString("[black:yellow:]")
+			}
+			sb.WriteString(escaped)
+			sb.WriteString("[-:-:-]\n")
+		} else {
+			sb.WriteString(escaped)
+			sb.WriteString("\n")
+		}
+	}
+
+	// Update title to show cursor mode indicator.
+	baseTitle := "Details"
+	if a.detailsCursorOnComments {
+		baseTitle = "Comments"
+	}
+	modeLabel := fmt.Sprintf(" ▶ %s [CURSOR] ", baseTitle)
+	if a.detailsVisualMode {
+		modeLabel = fmt.Sprintf(" ▶ %s [VISUAL] ", baseTitle)
+	}
+	view.SetTitle(modeLabel)
+	view.SetTitleColor(a.theme.Accent)
+
+	view.SetText(sb.String())
+	// Scroll to keep cursor visible.
+	view.ScrollTo(a.detailsCursorLine, 0)
+
+	a.updateStatusBar()
+}
+
+// copyDetailsSelection copies the selected lines (or current line) to the system clipboard.
+func (a *App) copyDetailsSelection() {
+	lines := a.activeCursorLines()
+	if len(lines) == 0 {
+		return
+	}
+
+	var text string
+	if a.detailsVisualMode && a.detailsVisualStart >= 0 {
+		start := a.detailsVisualStart
+		end := a.detailsCursorLine
+		if start > end {
+			start, end = end, start
+		}
+		if end >= len(lines) {
+			end = len(lines) - 1
+		}
+		text = strings.Join(lines[start:end+1], "\n")
+	} else {
+		if a.detailsCursorLine < len(lines) {
+			text = lines[a.detailsCursorLine]
+		}
+	}
+
+	if err := copyToClipboard(text); err != nil {
+		a.updateStatusBarWithError(err)
+		return
+	}
+
+	// Exit visual mode after copy, keep cursor mode.
+	a.detailsVisualMode = false
+	a.detailsVisualStart = -1
+	a.renderDetailsCursorMode()
+	a.statusBar.SetText(fmt.Sprintf("%sCopied %d line(s) to clipboard[-]", a.themeTags.Accent, strings.Count(text, "\n")+1))
+}
+
+// openInEditor opens the content of the active details pane in $EDITOR.
+// onComments selects the comments pane; otherwise the description pane is used.
+func (a *App) openInEditor(onComments bool) {
+	var lines []string
+	var suffix string
+	if onComments {
+		lines = a.detailsCommentsLines
+		suffix = "-comments.md"
+	} else {
+		lines = a.detailsTextLines
+		suffix = "-description.md"
+	}
+
+	if len(lines) == 0 {
+		return
+	}
+
+	content := strings.Join(lines, "\n")
+
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = os.Getenv("VISUAL")
+	}
+	if editor == "" {
+		editor = "vi"
+	}
+
+	// Write to a temp file.
+	tmpFile, err := os.CreateTemp("", "linear-tui-*"+suffix)
+	if err != nil {
+		a.updateStatusBarWithError(fmt.Errorf("editor: cannot create temp file: %w", err))
+		return
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := tmpFile.WriteString(content); err != nil {
+		tmpFile.Close()
+		a.updateStatusBarWithError(fmt.Errorf("editor: cannot write temp file: %w", err))
+		return
+	}
+	tmpFile.Close()
+
+	// Suspend tview and hand the terminal to the editor.
+	a.app.Suspend(func() {
+		cmd := exec.Command(editor, tmpPath) //nolint:gosec
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		_ = cmd.Run()
+	})
+}
+
+
