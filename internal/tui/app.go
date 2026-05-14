@@ -83,6 +83,7 @@ type App struct {
 	otherIssueRows []IssueRow                  // Flattened rows for "Other Issues" table
 	otherIDToIssue map[string]*linearapi.Issue // Quick lookup by issue ID for "Other Issues"
 	expandedState  map[string]bool             // Expanded state for parent issues (shared across sections)
+	collapsedStages map[string]bool            // Collapsed state for stage (workflow state) groups
 
 	// Filter/sort state
 	searchQuery string
@@ -147,6 +148,7 @@ func NewApp(api *linearapi.Client, cfg config.Config, templates []config.AgentPr
 		focusedPane:          FocusNavigation,
 		sortField:            SortByUpdatedAt,
 		expandedState:        make(map[string]bool),
+		collapsedStages:      make(map[string]bool),
 		idToIssue:            make(map[string]*linearapi.Issue),
 		myIDToIssue:          make(map[string]*linearapi.Issue),
 		otherIDToIssue:       make(map[string]*linearapi.Issue),
@@ -419,6 +421,7 @@ func (a *App) resetCachedState() {
 	a.workflowStates = nil
 	a.activeIssuesSection = IssuesSectionOther
 	a.expandedState = make(map[string]bool)
+	a.collapsedStages = make(map[string]bool)
 
 	a.isLoading = false
 	a.pendingRefresh = false
@@ -1392,8 +1395,8 @@ func (a *App) rebuildIssuesTables(targetIssueID string) *linearapi.Issue {
 	myIssues, otherIssues := splitIssuesByAssignee(issues, currentUserID)
 
 	// Build hierarchical tree rows for each section.
-	a.myIssueRows, a.myIDToIssue = BuildIssueRows(myIssues, a.expandedState)
-	a.otherIssueRows, a.otherIDToIssue = BuildIssueRows(otherIssues, a.expandedState)
+	a.myIssueRows, a.myIDToIssue = BuildIssueRowsGrouped(myIssues, a.expandedState, a.collapsedStages)
+	a.otherIssueRows, a.otherIDToIssue = BuildIssueRowsGrouped(otherIssues, a.expandedState, a.collapsedStages)
 
 	// Legacy: keep old fields for backward compatibility during migration.
 	a.issueRows = make([]IssueRow, 0, len(a.myIssueRows)+len(a.otherIssueRows))
@@ -1436,17 +1439,26 @@ func (a *App) rebuildIssuesTables(targetIssueID string) *linearapi.Issue {
 		}
 	}
 
-	// If no target issue, default to first available.
+	// If no target issue, default to first available non-header row.
 	if selectedIssue == nil {
-		if len(a.myIssueRows) > 0 {
-			if issue, ok := a.myIDToIssue[a.myIssueRows[0].IssueID]; ok {
-				selectedIssue = issue
-				a.activeIssuesSection = IssuesSectionMy
+		for _, row := range a.myIssueRows {
+			if !row.IsStageHeader {
+				if issue, ok := a.myIDToIssue[row.IssueID]; ok {
+					selectedIssue = issue
+					a.activeIssuesSection = IssuesSectionMy
+					break
+				}
 			}
-		} else if len(a.otherIssueRows) > 0 {
-			if issue, ok := a.otherIDToIssue[a.otherIssueRows[0].IssueID]; ok {
-				selectedIssue = issue
-				a.activeIssuesSection = IssuesSectionOther
+		}
+		if selectedIssue == nil {
+			for _, row := range a.otherIssueRows {
+				if !row.IsStageHeader {
+					if issue, ok := a.otherIDToIssue[row.IssueID]; ok {
+						selectedIssue = issue
+						a.activeIssuesSection = IssuesSectionOther
+						break
+					}
+				}
 			}
 		}
 	}
@@ -1584,8 +1596,8 @@ func (a *App) toggleIssueExpanded(issueID string) {
 	issues := a.issues
 	a.issuesMu.RUnlock()
 	myIssues, otherIssues := splitIssuesByAssignee(issues, currentUserID)
-	a.myIssueRows, a.myIDToIssue = BuildIssueRows(myIssues, a.expandedState)
-	a.otherIssueRows, a.otherIDToIssue = BuildIssueRows(otherIssues, a.expandedState)
+	a.myIssueRows, a.myIDToIssue = BuildIssueRowsGrouped(myIssues, a.expandedState, a.collapsedStages)
+	a.otherIssueRows, a.otherIDToIssue = BuildIssueRowsGrouped(otherIssues, a.expandedState, a.collapsedStages)
 
 	// Legacy: keep old fields for backward compatibility
 	a.issueRows = make([]IssueRow, 0, len(a.myIssueRows)+len(a.otherIssueRows))
@@ -1675,9 +1687,17 @@ func (a *App) updateStatusBar() {
 	case FocusNavigation:
 		helpText = fmt.Sprintf("%s↑↓: navigate | Enter: select | Tab/→/l: next pane | Shift+Tab/←/h: prev pane | :: palette | /: search | q: quit[-]", keyColor)
 	case FocusIssues:
-		helpText = fmt.Sprintf("%sj/k: navigate | Enter: select | Tab/→/l: next pane | Shift+Tab/←/h: prev pane | :: palette | /: search | q: quit[-]", keyColor)
+		helpText = fmt.Sprintf("%sj/k: navigate | gg/G: top/bottom | Space/Enter: expand/collapse | Tab/→/l: next pane | :: palette | /: search | q: quit[-]", keyColor)
 	case FocusDetails:
-		helpText = fmt.Sprintf("%sj/k: scroll | Tab: switch description/comments | →/l: next pane | Shift+Tab/←/h: prev pane | :: palette | /: search | q: quit[-]", keyColor)
+		if a.detailsCursorMode {
+			if a.detailsVisualMode {
+				helpText = fmt.Sprintf("%sj/k: move cursor | y: copy selection | v: end selection | e: open in editor | q/Esc: exit cursor mode[-]", keyColor)
+			} else {
+				helpText = fmt.Sprintf("%sj/k: move cursor | v: start selection | y: copy line | gg/G: top/bottom | e: open in editor | q/Esc: exit cursor mode[-]", keyColor)
+			}
+		} else {
+			helpText = fmt.Sprintf("%sj/k: scroll | gg/G: top/bottom | v: cursor mode | e: open in editor | Tab: switch views | →/l: next pane | ←/h: prev pane | q: quit[-]", keyColor)
+		}
 	case FocusPalette:
 		helpText = fmt.Sprintf("%s↑↓: navigate | Enter: execute | Esc: close[-]", keyColor)
 	default:
