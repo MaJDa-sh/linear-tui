@@ -197,6 +197,7 @@ type Issue struct {
 	Priority    int
 	UpdatedAt   time.Time
 	CreatedAt   time.Time
+	DueDate     *time.Time
 	TeamID      string
 	ProjectID   string
 	URL         string
@@ -653,6 +654,7 @@ func (c *Client) searchIssuesPage(ctx context.Context, params FetchIssuesParams,
 				Priority    graphql.Float
 				UpdatedAt   graphql.String
 				CreatedAt   graphql.String
+				DueDate     *graphql.String
 				Description *graphql.String
 				Team        struct {
 					ID graphql.String
@@ -810,6 +812,7 @@ func (c *Client) fetchIssuesWithFilterPage(ctx context.Context, params FetchIssu
 				Priority    graphql.Float
 				UpdatedAt   graphql.String
 				CreatedAt   graphql.String
+				DueDate     *graphql.String
 				Description *graphql.String
 				Team        struct {
 					ID graphql.String
@@ -900,6 +903,15 @@ func (c *Client) parseIssueNode(node interface{}) Issue {
 	updatedAt := parseTime(v.FieldByName("UpdatedAt").String())
 	createdAt := parseTime(v.FieldByName("CreatedAt").String())
 
+	var dueDate *time.Time
+	dueDateField := v.FieldByName("DueDate")
+	if !dueDateField.IsNil() {
+		t := parseTime(dueDateField.Elem().String())
+		if !t.IsZero() {
+			dueDate = &t
+		}
+	}
+
 	priority := int(v.FieldByName("Priority").Float())
 
 	assignee := ""
@@ -977,6 +989,7 @@ func (c *Client) parseIssueNode(node interface{}) Issue {
 		Priority:    priority,
 		UpdatedAt:   updatedAt,
 		CreatedAt:   createdAt,
+		DueDate:     dueDate,
 		Description: description,
 		TeamID:      teamID,
 		ProjectID:   projectID,
@@ -1023,6 +1036,7 @@ func (c *Client) FetchIssueByID(ctx context.Context, id string) (Issue, error) {
 			Priority    graphql.Float
 			UpdatedAt   graphql.String
 			CreatedAt   graphql.String
+			DueDate     *graphql.String
 			Description *graphql.String
 			Team        struct {
 				ID graphql.String
@@ -1085,6 +1099,14 @@ func (c *Client) FetchIssueByID(ctx context.Context, id string) (Issue, error) {
 
 	updatedAt := parseTime(string(query.Issue.UpdatedAt))
 	createdAt := parseTime(string(query.Issue.CreatedAt))
+
+	var dueDate *time.Time
+	if query.Issue.DueDate != nil {
+		t := parseTime(string(*query.Issue.DueDate))
+		if !t.IsZero() {
+			dueDate = &t
+		}
+	}
 
 	assignee := ""
 	assigneeID := ""
@@ -1169,6 +1191,7 @@ func (c *Client) FetchIssueByID(ctx context.Context, id string) (Issue, error) {
 		Priority:    int(query.Issue.Priority),
 		UpdatedAt:   updatedAt,
 		CreatedAt:   createdAt,
+		DueDate:     dueDate,
 		Description: description,
 		TeamID:      string(query.Issue.Team.ID),
 		ProjectID:   projectID,
