@@ -127,6 +127,12 @@ type App struct {
 	detailsCursorOnComments bool     // Whether cursor mode is active on the comments pane
 	detailsPendingG         bool     // Tracks first 'g' press for gg sequence in details view
 	issuesPendingG     bool     // Tracks first 'g' press for gg sequence in issues table
+
+	// Multi-select state (Shift+V visual line mode in issues pane)
+	multiSelectActive  bool
+	multiSelectSection IssuesSection
+	multiSelectAnchor  int             // table row of anchor (1-indexed)
+	multiSelectIDs     map[string]bool // set of currently selected issue IDs
 }
 
 // FocusTarget indicates which pane has focus.
@@ -160,6 +166,7 @@ func NewApp(api *linearapi.Client, cfg config.Config, templates []config.AgentPr
 		sortField:            SortByUpdatedAt,
 		expandedState:        make(map[string]bool),
 		collapsedStages:      make(map[string]bool),
+		multiSelectIDs:       make(map[string]bool),
 		idToIssue:            make(map[string]*linearapi.Issue),
 		myIDToIssue:          make(map[string]*linearapi.Issue),
 		otherIDToIssue:       make(map[string]*linearapi.Issue),
@@ -283,11 +290,11 @@ func (a *App) applyThemeToComponents() {
 
 	if a.myIssuesTable != nil {
 		a.applyIssuesTableTheme(a.myIssuesTable)
-		renderIssuesTableModel(a.myIssuesTable, a.myIssueRows, a.myIDToIssue, a.selectedIssueID(IssuesSectionMy), a.theme)
+		renderIssuesTableModel(a.myIssuesTable, a.myIssueRows, a.myIDToIssue, a.selectedIssueID(IssuesSectionMy), a.theme, a.multiSelectIDsForSection(IssuesSectionMy))
 	}
 	if a.otherIssuesTable != nil {
 		a.applyIssuesTableTheme(a.otherIssuesTable)
-		renderIssuesTableModel(a.otherIssuesTable, a.otherIssueRows, a.otherIDToIssue, a.selectedIssueID(IssuesSectionOther), a.theme)
+		renderIssuesTableModel(a.otherIssuesTable, a.otherIssueRows, a.otherIDToIssue, a.selectedIssueID(IssuesSectionOther), a.theme, a.multiSelectIDsForSection(IssuesSectionOther))
 	}
 
 	if a.detailsDescriptionView != nil {
@@ -821,6 +828,11 @@ func (a *App) handleIssuesKey(event *tcell.EventKey) *tcell.EventKey {
 	}
 
 	switch event.Key() {
+	case tcell.KeyEscape:
+		if a.multiSelectActive {
+			a.exitMultiSelect()
+			return nil
+		}
 	case tcell.KeyLeft:
 		a.focusedPane = FocusNavigation
 		a.updateFocus()
@@ -834,6 +846,13 @@ func (a *App) handleIssuesKey(event *tcell.EventKey) *tcell.EventKey {
 		r := event.Rune()
 		// Handle vim-style navigation first
 		switch r {
+		case 'V':
+			if a.multiSelectActive {
+				a.exitMultiSelect()
+			} else {
+				a.enterMultiSelect()
+			}
+			return nil
 		case 'h':
 			a.focusedPane = FocusNavigation
 			a.updateFocus()
@@ -885,6 +904,11 @@ func (a *App) handleIssuesKey(event *tcell.EventKey) *tcell.EventKey {
 					}
 				}
 			}
+			return nil
+		}
+		// Multi-select action overrides: apply to all selected issues.
+		if a.multiSelectActive && (r == 's' || r == 'm' || r == 'u') {
+			a.handleMultiSelectAction(r)
 			return nil
 		}
 		// Handle command shortcuts (plain letters) - skip navigation keys
@@ -1608,6 +1632,11 @@ func (a *App) updateIssuesData(issues []linearapi.Issue, issueID ...string) {
 
 // rebuildIssuesTables rebuilds issue rows and renders tables, returning the selected issue.
 func (a *App) rebuildIssuesTables(targetIssueID string) *linearapi.Issue {
+	// Clear multi-select when issues are rebuilt (data changed, selection would be stale).
+	if a.multiSelectActive {
+		a.multiSelectActive = false
+		a.multiSelectIDs = make(map[string]bool)
+	}
 	// Split issues by assignee.
 	a.issuesMu.RLock()
 	issues := a.issues
@@ -1651,8 +1680,8 @@ func (a *App) rebuildIssuesTables(targetIssueID string) *linearapi.Issue {
 		}
 	}
 
-	renderIssuesTableModel(a.myIssuesTable, a.myIssueRows, a.myIDToIssue, selectedMyIssueID, a.theme)
-	renderIssuesTableModel(a.otherIssuesTable, a.otherIssueRows, a.otherIDToIssue, selectedOtherIssueID, a.theme)
+	renderIssuesTableModel(a.myIssuesTable, a.myIssueRows, a.myIDToIssue, selectedMyIssueID, a.theme, nil)
+	renderIssuesTableModel(a.otherIssuesTable, a.otherIssueRows, a.otherIDToIssue, selectedOtherIssueID, a.theme, nil)
 
 	// Select issue and update details.
 	var selectedIssue *linearapi.Issue
@@ -1849,8 +1878,8 @@ func (a *App) toggleIssueExpanded(issueID string) {
 		a.activeIssuesSection = IssuesSectionOther
 	}
 
-	renderIssuesTableModel(a.myIssuesTable, a.myIssueRows, a.myIDToIssue, selectedMyIssueID, a.theme)
-	renderIssuesTableModel(a.otherIssuesTable, a.otherIssueRows, a.otherIDToIssue, selectedOtherIssueID, a.theme)
+	renderIssuesTableModel(a.myIssuesTable, a.myIssueRows, a.myIDToIssue, selectedMyIssueID, a.theme, nil)
+	renderIssuesTableModel(a.otherIssuesTable, a.otherIssueRows, a.otherIDToIssue, selectedOtherIssueID, a.theme, nil)
 }
 
 // toggleStageCollapsed toggles the collapsed state of a workflow stage group.
@@ -1903,8 +1932,8 @@ func (a *App) toggleStageCollapsed(stage string) {
 		a.activeIssuesSection = IssuesSectionOther
 	}
 
-	renderIssuesTableModel(a.myIssuesTable, a.myIssueRows, a.myIDToIssue, selectedMyIssueID, a.theme)
-	renderIssuesTableModel(a.otherIssuesTable, a.otherIssueRows, a.otherIDToIssue, selectedOtherIssueID, a.theme)
+	renderIssuesTableModel(a.myIssuesTable, a.myIssueRows, a.myIDToIssue, selectedMyIssueID, a.theme, nil)
+	renderIssuesTableModel(a.otherIssuesTable, a.otherIssueRows, a.otherIDToIssue, selectedOtherIssueID, a.theme, nil)
 }
 
 // onNavigationSelected handles when a navigation item is selected.
@@ -1966,7 +1995,11 @@ func (a *App) updateStatusBar() {
 	case FocusNavigation:
 		helpText = fmt.Sprintf("%s↑↓: navigate | Enter: select | Tab/→/l: next pane | Shift+Tab/←/h: prev pane | :: palette | /: search | q: quit[-]", keyColor)
 	case FocusIssues:
-		helpText = fmt.Sprintf("%sj/k: navigate | gg/G: top/bottom | Space/Enter: expand/collapse | Tab/→/l: next pane | :: palette | /: search | q: quit[-]", keyColor)
+		if a.multiSelectActive {
+			helpText = fmt.Sprintf("%sj/k: extend selection | s: change status | m: assign to me | u: unassign | V/Esc: exit select (%d selected)[-]", keyColor, len(a.multiSelectIDs))
+		} else {
+			helpText = fmt.Sprintf("%sj/k: navigate | gg/G: top/bottom | V: multi-select | Space/Enter: expand/collapse | Tab/→/l: next pane | :: palette | /: search | q: quit[-]", keyColor)
+		}
 	case FocusDetails:
 		if a.detailsCursorMode {
 			if a.detailsVisualMode {

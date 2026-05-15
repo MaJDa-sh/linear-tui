@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -118,12 +119,17 @@ func (a *App) buildIssuesTable(title string, section IssuesSection) *tview.Table
 		SetAlign(tview.AlignLeft).
 		SetSelectable(false).
 		SetExpansion(1))
-	table.SetCell(0, 3, tview.NewTableCell("Assignee").
+	table.SetCell(0, 3, tview.NewTableCell("Created").
 		SetStyle(headerStyle).
 		SetAlign(tview.AlignLeft).
 		SetSelectable(false).
 		SetExpansion(2))
-	table.SetCell(0, 4, tview.NewTableCell("Title").
+	table.SetCell(0, 4, tview.NewTableCell("Assignee").
+		SetStyle(headerStyle).
+		SetAlign(tview.AlignLeft).
+		SetSelectable(false).
+		SetExpansion(2))
+	table.SetCell(0, 5, tview.NewTableCell("Title").
 		SetStyle(headerStyle).
 		SetAlign(tview.AlignLeft).
 		SetSelectable(false).
@@ -182,8 +188,12 @@ func (a *App) setupIssuesTableNavigation(table *tview.Table, section IssuesSecti
 				row, _ := table.GetSelection()
 				if row < table.GetRowCount()-1 {
 					moveAndSelect(row+1, section)
-				} else if section == IssuesSectionMy && len(a.otherIssueRows) > 0 {
-					// At bottom of My Issues — move to Other Issues.
+					if a.multiSelectActive && a.multiSelectSection == section {
+						a.updateMultiSelectRange(row + 1)
+						a.rerenderTableForSection(section, row+1)
+					}
+				} else if section == IssuesSectionMy && len(a.otherIssueRows) > 0 && !a.multiSelectActive {
+					// At bottom of My Issues — move to Other Issues (blocked in multi-select).
 					a.activeIssuesSection = IssuesSectionOther
 					a.otherIssuesTable.Select(1, 0)
 					if issueRow := a.getIssueRowForSection(1, IssuesSectionOther); issueRow != nil && !issueRow.IsStageHeader {
@@ -198,8 +208,12 @@ func (a *App) setupIssuesTableNavigation(table *tview.Table, section IssuesSecti
 				row, _ := table.GetSelection()
 				if row > 1 {
 					moveAndSelect(row-1, section)
-				} else if section == IssuesSectionOther && len(a.myIssueRows) > 0 {
-					// At top of Other Issues — move to My Issues.
+					if a.multiSelectActive && a.multiSelectSection == section {
+						a.updateMultiSelectRange(row - 1)
+						a.rerenderTableForSection(section, row-1)
+					}
+				} else if section == IssuesSectionOther && len(a.myIssueRows) > 0 && !a.multiSelectActive {
+					// At top of Other Issues — move to My Issues (blocked in multi-select).
 					a.activeIssuesSection = IssuesSectionMy
 					lastRow := len(a.myIssueRows)
 					a.myIssuesTable.Select(lastRow, 0)
@@ -304,7 +318,11 @@ func (a *App) setupIssuesTableNavigation(table *tview.Table, section IssuesSecti
 			row, _ := table.GetSelection()
 			if row < table.GetRowCount()-1 {
 				moveAndSelect(row+1, section)
-			} else if section == IssuesSectionMy && len(a.otherIssueRows) > 0 {
+				if a.multiSelectActive && a.multiSelectSection == section {
+					a.updateMultiSelectRange(row + 1)
+					a.rerenderTableForSection(section, row+1)
+				}
+			} else if section == IssuesSectionMy && len(a.otherIssueRows) > 0 && !a.multiSelectActive {
 				a.activeIssuesSection = IssuesSectionOther
 				a.otherIssuesTable.Select(1, 0)
 				if issueRow := a.getIssueRowForSection(1, IssuesSectionOther); issueRow != nil && !issueRow.IsStageHeader {
@@ -319,7 +337,11 @@ func (a *App) setupIssuesTableNavigation(table *tview.Table, section IssuesSecti
 			row, _ := table.GetSelection()
 			if row > 1 {
 				moveAndSelect(row-1, section)
-			} else if section == IssuesSectionOther && len(a.myIssueRows) > 0 {
+				if a.multiSelectActive && a.multiSelectSection == section {
+					a.updateMultiSelectRange(row - 1)
+					a.rerenderTableForSection(section, row-1)
+				}
+			} else if section == IssuesSectionOther && len(a.myIssueRows) > 0 && !a.multiSelectActive {
 				a.activeIssuesSection = IssuesSectionMy
 				lastRow := len(a.myIssueRows)
 				a.myIssuesTable.Select(lastRow, 0)
@@ -380,7 +402,8 @@ func (a *App) getRowForIssueInSection(issueID string, section IssuesSection) int
 }
 
 // renderIssuesTableModel renders a table with the given rows and issue lookup map.
-func renderIssuesTableModel(table *tview.Table, rows []IssueRow, idToIssue map[string]*linearapi.Issue, selectedIssueID string, theme Theme) {
+// selectedIDs, if non-nil, contains issue IDs that should be highlighted as multi-selected.
+func renderIssuesTableModel(table *tview.Table, rows []IssueRow, idToIssue map[string]*linearapi.Issue, selectedIssueID string, theme Theme, selectedIDs map[string]bool) {
 	table.Clear()
 
 	// Set column headers with better styling
@@ -404,16 +427,29 @@ func renderIssuesTableModel(table *tview.Table, rows []IssueRow, idToIssue map[s
 		SetAlign(tview.AlignLeft).
 		SetSelectable(false).
 		SetExpansion(1))
-	table.SetCell(0, 3, tview.NewTableCell("Assignee").
+	table.SetCell(0, 3, tview.NewTableCell("Created").
 		SetStyle(headerStyle).
 		SetAlign(tview.AlignLeft).
 		SetSelectable(false).
 		SetExpansion(2))
-	table.SetCell(0, 4, tview.NewTableCell("Title").
+	table.SetCell(0, 4, tview.NewTableCell("Assignee").
+		SetStyle(headerStyle).
+		SetAlign(tview.AlignLeft).
+		SetSelectable(false).
+		SetExpansion(2))
+	table.SetCell(0, 5, tview.NewTableCell("Title").
 		SetStyle(headerStyle).
 		SetAlign(tview.AlignLeft).
 		SetSelectable(false).
 		SetExpansion(6))
+
+	// Pre-compute multi-select highlight background (25% accent + 75% background).
+	var multiSelectBg tcell.Color
+	if len(selectedIDs) > 0 {
+		ar, ag, ab := theme.Accent.RGB()
+		br, bg, bb := theme.Background.RGB()
+		multiSelectBg = tcell.NewRGBColor((ar+br*3)/4, (ag+bg*3)/4, (ab+bb*3)/4)
+	}
 
 	// Add issue rows using the hierarchical structure
 	for i, issueRow := range rows {
@@ -456,7 +492,7 @@ func renderIssuesTableModel(table *tview.Table, rows []IssueRow, idToIssue map[s
 				SetStyle(stageStyle).
 				SetSelectable(true).
 				SetAlign(tview.AlignLeft))
-			for col := 1; col <= 4; col++ {
+			for col := 1; col <= 5; col++ {
 				table.SetCell(row, col, tview.NewTableCell("").
 					SetStyle(stageStyle).
 					SetSelectable(false).
@@ -470,11 +506,15 @@ func renderIssuesTableModel(table *tview.Table, rows []IssueRow, idToIssue map[s
 			continue
 		}
 
+		isMultiSelected := selectedIDs != nil && selectedIDs[issue.ID]
+
 		// Build identifier with hierarchy indicator
 		identifier := issue.Identifier
 		identifierPrefix := " "
 
-		if issueRow.Level > 0 {
+		if isMultiSelected {
+			identifierPrefix = "●"
+		} else if issueRow.Level > 0 {
 			// Child issue - show indent prefix
 			identifierPrefix = " " + IconChildPrefix + " "
 		} else if issueRow.HasChildren {
@@ -486,9 +526,13 @@ func renderIssuesTableModel(table *tview.Table, rows []IssueRow, idToIssue map[s
 			}
 		}
 
-		table.SetCell(row, 0, tview.NewTableCell(identifierPrefix+identifier).
+		idCell := tview.NewTableCell(identifierPrefix+identifier).
 			SetTextColor(theme.SecondaryText).
-			SetAlign(tview.AlignLeft))
+			SetAlign(tview.AlignLeft)
+		if isMultiSelected {
+			idCell.SetBackgroundColor(multiSelectBg).SetTextColor(theme.Accent)
+		}
+		table.SetCell(row, 0, idCell)
 
 		// State with color based on state
 		state := issue.State
@@ -516,15 +560,33 @@ func renderIssuesTableModel(table *tview.Table, rows []IssueRow, idToIssue map[s
 			state = state[:12]
 		}
 
-		table.SetCell(row, 1, tview.NewTableCell(stateIcon+" "+state).
+		stateCell := tview.NewTableCell(stateIcon+" "+state).
 			SetTextColor(stateColor).
-			SetAlign(tview.AlignLeft))
+			SetAlign(tview.AlignLeft)
+		if isMultiSelected {
+			stateCell.SetBackgroundColor(multiSelectBg)
+		}
+		table.SetCell(row, 1, stateCell)
 
 		// Priority
 		priorityText, priorityColor := formatPriority(issue.Priority, theme)
-		table.SetCell(row, 2, tview.NewTableCell(priorityText).
+		priorityCell := tview.NewTableCell(priorityText).
 			SetTextColor(priorityColor).
-			SetAlign(tview.AlignLeft))
+			SetAlign(tview.AlignLeft)
+		if isMultiSelected {
+			priorityCell.SetBackgroundColor(multiSelectBg)
+		}
+		table.SetCell(row, 2, priorityCell)
+
+		// Created date
+		createdText := formatCreatedAt(issue.CreatedAt)
+		createdCell := tview.NewTableCell(createdText).
+			SetTextColor(theme.SecondaryText).
+			SetAlign(tview.AlignLeft)
+		if isMultiSelected {
+			createdCell.SetBackgroundColor(multiSelectBg)
+		}
+		table.SetCell(row, 3, createdCell)
 
 		// Assignee
 		assignee := issue.Assignee
@@ -537,15 +599,23 @@ func renderIssuesTableModel(table *tview.Table, rows []IssueRow, idToIssue map[s
 			assignee = assignee[:15]
 		}
 
-		table.SetCell(row, 3, tview.NewTableCell(assignee).
+		assigneeCell := tview.NewTableCell(assignee).
 			SetTextColor(assigneeColor).
-			SetAlign(tview.AlignLeft))
+			SetAlign(tview.AlignLeft)
+		if isMultiSelected {
+			assigneeCell.SetBackgroundColor(multiSelectBg)
+		}
+		table.SetCell(row, 4, assigneeCell)
 
 		// Title
 		title := issue.Title
-		table.SetCell(row, 4, tview.NewTableCell(title).
+		titleCell := tview.NewTableCell(title).
 			SetTextColor(theme.Foreground).
-			SetAlign(tview.AlignLeft))
+			SetAlign(tview.AlignLeft)
+		if isMultiSelected {
+			titleCell.SetBackgroundColor(multiSelectBg)
+		}
+		table.SetCell(row, 5, titleCell)
 	}
 
 	// Select the specified issue or first non-header row
@@ -573,11 +643,12 @@ func renderIssuesTableModel(table *tview.Table, rows []IssueRow, idToIssue map[s
 		table.SetCell(1, 0, tview.NewTableCell("").SetSelectable(false))
 		table.SetCell(1, 1, tview.NewTableCell("").SetSelectable(false))
 		table.SetCell(1, 2, tview.NewTableCell("").SetSelectable(false))
-		table.SetCell(1, 3, tview.NewTableCell("No issues").
+		table.SetCell(1, 3, tview.NewTableCell("").SetSelectable(false))
+		table.SetCell(1, 4, tview.NewTableCell("").SetSelectable(false))
+		table.SetCell(1, 5, tview.NewTableCell("No issues").
 			SetTextColor(theme.SecondaryText).
 			SetAlign(tview.AlignCenter).
 			SetSelectable(false))
-		table.SetCell(1, 4, tview.NewTableCell("").SetSelectable(false))
 	}
 }
 
@@ -605,4 +676,24 @@ func renderIssueRow(issue linearapi.Issue) []string {
 	}
 
 	return []string{identifier, state, priorityText, assignee, issue.Title}
+}
+
+// formatCreatedAt formats a creation timestamp for display in the issues table.
+// Shows relative time for recent issues (today/yesterday) or a short date otherwise.
+func formatCreatedAt(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+	now := time.Now()
+	diff := now.Sub(t)
+	switch {
+	case diff < 24*time.Hour && now.Day() == t.Day():
+		return "Today"
+	case diff < 48*time.Hour:
+		return "Yesterday"
+	case diff < 7*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(diff.Hours()/24))
+	default:
+		return t.Format("Jan 2")
+	}
 }
