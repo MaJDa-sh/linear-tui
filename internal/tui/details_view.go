@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/gdamore/tcell/v2"
@@ -149,6 +150,18 @@ func (a *App) updateDetailsView() {
 	headerLines = append(headerLines, fmt.Sprintf("%sAssignee:[-]   %s%s[-]", keyColor, valColor, assignee))
 
 	headerLines = append(headerLines, fmt.Sprintf("%sPriority:[-]   %s%d[-]", keyColor, valColor, issue.Priority))
+
+	// Dates
+	if !issue.CreatedAt.IsZero() {
+		headerLines = append(headerLines, fmt.Sprintf("%sCreated:[-]    %s%s[-]", keyColor, valColor, issue.CreatedAt.Format("Jan 2, 2006")))
+	}
+	if issue.DueDate != nil {
+		dueDateColor := valColor
+		if issue.DueDate.Before(time.Now()) {
+			dueDateColor = a.themeTags.Error
+		}
+		headerLines = append(headerLines, fmt.Sprintf("%sDue:[-]        %s%s[-]", keyColor, dueDateColor, issue.DueDate.Format("Jan 2, 2006")))
+	}
 
 	// Labels
 	labelsText := "No labels"
