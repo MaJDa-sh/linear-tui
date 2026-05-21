@@ -833,6 +833,9 @@ func (a *App) handleIssuesKey(event *tcell.EventKey) *tcell.EventKey {
 			a.exitMultiSelect()
 			return nil
 		}
+		a.focusedPane = FocusNavigation
+		a.updateFocus()
+		return nil
 	case tcell.KeyLeft:
 		a.focusedPane = FocusNavigation
 		a.updateFocus()
@@ -958,8 +961,8 @@ func (a *App) handleDetailsKey(event *tcell.EventKey) *tcell.EventKey {
 		a.updateFocus()
 		return nil
 	case tcell.KeyEscape:
-		// Exit cursor mode if somehow active.
-		a.detailsCursorMode = false
+		a.focusedPane = FocusIssues
+		a.updateFocus()
 		return nil
 	case tcell.KeyRune:
 		switch event.Rune() {
