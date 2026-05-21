@@ -14,7 +14,7 @@ func (a *App) buildPaletteModal() *tview.Flex {
 		SetLabel("> ").
 		SetLabelColor(a.theme.Accent).
 		SetFieldWidth(0). // Use full available width
-		SetPlaceholder("Type to filter commands...").
+		SetPlaceholder("Type to search issues...").
 		SetPlaceholderTextColor(a.theme.SecondaryText).
 		SetFieldBackgroundColor(a.theme.InputBg).
 		SetFieldTextColor(a.theme.Foreground).
