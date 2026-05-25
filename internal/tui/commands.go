@@ -350,21 +350,30 @@ func DefaultCommands(app *App) []Command {
 					return
 				}
 				a.ShowStatusPicker(func(stateID string) {
+					stateName := a.findWorkflowStateName(stateID)
+					a.updateIssuesLocally(func(iss *linearapi.Issue) bool {
+						if iss.ID == issue.ID {
+							iss.StateID = stateID
+							if stateName != "" {
+								iss.State = stateName
+							}
+							return true
+						}
+						return false
+					}, issue.ID)
 					go func() {
 						ctx := context.Background()
 						_, err := a.GetAPI().UpdateIssue(ctx, linearapi.UpdateIssueInput{
 							ID:      issue.ID,
 							StateID: &stateID,
 						})
-						a.QueueUpdateDraw(func() {
-							if err != nil {
+						if err != nil {
+							a.QueueUpdateDraw(func() {
 								logger.ErrorWithErr(err, "tui.commands: failed to change status issue=%s", issue.Identifier)
 								a.updateStatusBarWithError(err)
-								return
-							}
-							logger.Info("tui.commands: changed status issue=%s", issue.Identifier)
-							go a.refreshIssues(issue.ID)
-						})
+								go a.refreshIssues(issue.ID)
+							})
+						}
 					}()
 				})
 			},
