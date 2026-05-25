@@ -146,15 +146,14 @@ func (a *App) handleMultiSelectAction(action rune) {
 						StateID: &stateID,
 					})
 					if err != nil {
-						a.QueueUpdateDraw(func() { a.updateStatusBarWithError(err) })
+						a.QueueUpdateDraw(func() {
+							a.updateStatusBarWithError(err)
+							go a.refreshIssues()
+						})
 						return
 					}
 				}
 				logger.Info("tui.multiselect: changed status for %d issues", len(issueIDs))
-				a.QueueUpdateDraw(func() {
-					a.exitMultiSelect()
-					go a.refreshIssues()
-				})
 			}()
 		})
 
