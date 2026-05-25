@@ -122,6 +122,22 @@ func (a *App) handleMultiSelectAction(action rune) {
 	switch action {
 	case 's':
 		a.ShowStatusPicker(func(stateID string) {
+			stateName := a.findWorkflowStateName(stateID)
+			idSet := make(map[string]bool, len(issueIDs))
+			for _, id := range issueIDs {
+				idSet[id] = true
+			}
+			a.exitMultiSelect()
+			a.updateIssuesLocally(func(iss *linearapi.Issue) bool {
+				if idSet[iss.ID] {
+					iss.StateID = stateID
+					if stateName != "" {
+						iss.State = stateName
+					}
+					return true
+				}
+				return false
+			}, "")
 			go func() {
 				ctx := context.Background()
 				for _, id := range issueIDs {
