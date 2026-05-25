@@ -1633,6 +1633,36 @@ func (a *App) updateIssuesData(issues []linearapi.Issue, issueID ...string) {
 	a.updateStatusBar()
 }
 
+// updateIssuesLocally updates issues in-place without re-fetching from the API,
+// then rebuilds the tables. The mutate function is called for each issue and should
+// return true if the issue was modified.
+func (a *App) updateIssuesLocally(mutate func(issue *linearapi.Issue) bool, targetIssueID string) {
+	a.issuesMu.Lock()
+	for i := range a.issues {
+		mutate(&a.issues[i])
+	}
+	if a.sortField == SortByPriority {
+		sortIssuesByPriority(a.issues)
+	}
+	a.issuesMu.Unlock()
+
+	selectedIssue := a.rebuildIssuesTables(targetIssueID)
+	if selectedIssue != nil {
+		a.onIssueSelected(*selectedIssue)
+	}
+	a.updateStatusBar()
+}
+
+// findWorkflowStateName returns the name of a workflow state by its ID.
+func (a *App) findWorkflowStateName(stateID string) string {
+	for _, s := range a.workflowStates {
+		if s.ID == stateID {
+			return s.Name
+		}
+	}
+	return ""
+}
+
 // rebuildIssuesTables rebuilds issue rows and renders tables, returning the selected issue.
 func (a *App) rebuildIssuesTables(targetIssueID string) *linearapi.Issue {
 	// Clear multi-select when issues are rebuilt (data changed, selection would be stale).
