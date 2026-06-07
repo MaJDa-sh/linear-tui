@@ -1004,6 +1004,13 @@ func (a *App) handleDetailsKey(event *tcell.EventKey) *tcell.EventKey {
 			onComments := a.focusedDetailsView && a.detailsCommentsVisible
 			a.openInEditor(onComments)
 			return nil
+		case 'o':
+			// Open issue in browser.
+			issue := a.GetSelectedIssue()
+			if issue != nil && issue.URL != "" {
+				_ = openURL(issue.URL)
+			}
+			return nil
 		}
 	}
 	return event
