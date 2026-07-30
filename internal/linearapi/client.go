@@ -1706,3 +1706,77 @@ func (c *Client) ListIssueLabels(ctx context.Context, teamID string) ([]IssueLab
 
 	return labels, nil
 }
+
+// FetchNotifications fetches the current user's notifications.
+func (c *Client) FetchNotifications(ctx context.Context) ([]Notification, error) {
+	var query struct {
+		Notifications struct {
+			Nodes []struct {
+				ID        graphql.String
+				Type      graphql.String
+				ReadAt    *graphql.String
+				CreatedAt graphql.String
+				UpdatedAt graphql.String
+				OnIssueNotification struct {
+					Issue struct {
+						ID         graphql.String
+						Identifier graphql.String
+						Title      graphql.String
+						Priority   graphql.Int
+						State      struct {
+							Name graphql.String
+						}
+						Assignee *struct {
+							DisplayName graphql.String
+						}
+						URL graphql.String
+					}
+					Actor *struct {
+						DisplayName graphql.String
+					}
+				} `graphql:"... on IssueNotification"`
+			}
+		} `graphql:"notifications(first: $first)"`
+	}
+
+	variables := map[string]interface{}{
+		"first": graphql.Int(50),
+	}
+
+	err := c.client.Query(ctx, &query, variables)
+	if err != nil {
+		logger.ErrorWithErr(err, "linearapi.client: FetchNotifications failed")
+		return nil, fmt.Errorf("fetch notifications: %w", err)
+	}
+
+	notifications := make([]Notification, 0, len(query.Notifications.Nodes))
+	for _, node := range query.Notifications.Nodes {
+		n := Notification{
+			ID:        string(node.ID),
+			Type:      string(node.Type),
+			CreatedAt: parseTime(string(node.CreatedAt)),
+			UpdatedAt: parseTime(string(node.UpdatedAt)),
+		}
+		if node.ReadAt != nil {
+			t := parseTime(string(*node.ReadAt))
+			n.ReadAt = &t
+		}
+		issueNode := node.OnIssueNotification.Issue
+		if string(issueNode.ID) != "" {
+			n.IssueID = string(issueNode.ID)
+			n.IssueIdentifier = string(issueNode.Identifier)
+			n.IssueTitle = string(issueNode.Title)
+			n.IssueState = string(issueNode.State.Name)
+			n.IssuePriority = int(issueNode.Priority)
+			n.IssueURL = string(issueNode.URL)
+			if issueNode.Assignee != nil {
+				n.IssueAssignee = string(issueNode.Assignee.DisplayName)
+			}
+		}
+		if node.OnIssueNotification.Actor != nil {
+			n.ActorName = string(node.OnIssueNotification.Actor.DisplayName)
+		}
+		notifications = append(notifications, n)
+	}
+	return notifications, nil
+}
