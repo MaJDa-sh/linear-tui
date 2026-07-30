@@ -110,6 +110,12 @@ type App struct {
 	// UI update mutex (for test safety when queueUpdateDraw executes immediately)
 	uiUpdateMu sync.Mutex
 
+	// Inbox state
+	notifications          []linearapi.Notification
+	notificationsTable     *tview.Table
+	isInboxMode            bool
+	selectedNotification   *linearapi.Notification
+
 	// Race-safety for issue detail fetching
 	fetchingIssueID string // Tracks which issue ID we're currently fetching
 
@@ -497,6 +503,13 @@ func (a *App) rebuildNavigationTree(teams []linearapi.Team) {
 		SetExpanded(true)
 	root.AddChild(allIssues)
 
+	// Add "Inbox" node
+	inboxNode := tview.NewTreeNode("Inbox").
+		SetColor(a.theme.Foreground).
+		SetReference(&NavigationNode{ID: "inbox", Text: "Inbox", IsInbox: true}).
+		SetExpanded(true)
+	root.AddChild(inboxNode)
+
 	// Add teams
 	for _, team := range teams {
 		teamNode := tview.NewTreeNode(team.Name).
@@ -619,6 +632,8 @@ func (a *App) buildLayout() {
 	// Build My Issues and Other Issues tables
 	a.myIssuesTable = a.buildIssuesTable(" My Issues ", IssuesSectionMy)
 	a.otherIssuesTable = a.buildIssuesTable(" Other Issues ", IssuesSectionOther)
+	// Build notifications table for inbox
+	a.notificationsTable = a.buildNotificationsTable()
 	// Create vertical flex for issues column
 	a.issuesColumn = tview.NewFlex().SetDirection(tview.FlexRow)
 	// Initially show only Other Issues table (My Issues will be added when issues are loaded)
@@ -1261,22 +1276,31 @@ func (a *App) updateFocus() {
 		// Update all pane titles
 		a.updateAllPaneTitles()
 	case FocusIssues:
-		// Focus the active issues section
-		if a.activeIssuesSection == IssuesSectionMy && len(a.myIssueRows) > 0 {
-			a.app.SetFocus(a.myIssuesTable)
-			a.myIssuesTable.SetBorderColor(a.theme.BorderFocus)
-			a.otherIssuesTable.SetBorderColor(a.theme.Border)
+		if a.isInboxMode {
+			a.app.SetFocus(a.notificationsTable)
+			a.notificationsTable.SetBorderColor(a.theme.BorderFocus)
+			a.navigationTree.SetBorderColor(a.theme.Border)
+			a.detailsDescriptionView.SetBorderColor(a.theme.Border)
+			a.detailsCommentsView.SetBorderColor(a.theme.Border)
+			a.updateAllPaneTitles()
 		} else {
-			a.app.SetFocus(a.otherIssuesTable)
-			a.myIssuesTable.SetBorderColor(a.theme.Border)
-			a.otherIssuesTable.SetBorderColor(a.theme.BorderFocus)
-			a.activeIssuesSection = IssuesSectionOther
+			// Focus the active issues section
+			if a.activeIssuesSection == IssuesSectionMy && len(a.myIssueRows) > 0 {
+				a.app.SetFocus(a.myIssuesTable)
+				a.myIssuesTable.SetBorderColor(a.theme.BorderFocus)
+				a.otherIssuesTable.SetBorderColor(a.theme.Border)
+			} else {
+				a.app.SetFocus(a.otherIssuesTable)
+				a.myIssuesTable.SetBorderColor(a.theme.Border)
+				a.otherIssuesTable.SetBorderColor(a.theme.BorderFocus)
+				a.activeIssuesSection = IssuesSectionOther
+			}
+			// Update all pane titles
+			a.updateAllPaneTitles()
+			a.navigationTree.SetBorderColor(a.theme.Border)
+			a.detailsDescriptionView.SetBorderColor(a.theme.Border)
+			a.detailsCommentsView.SetBorderColor(a.theme.Border)
 		}
-		// Update all pane titles
-		a.updateAllPaneTitles()
-		a.navigationTree.SetBorderColor(a.theme.Border)
-		a.detailsDescriptionView.SetBorderColor(a.theme.Border)
-		a.detailsCommentsView.SetBorderColor(a.theme.Border)
 	case FocusDetails:
 		// Focus the appropriate sub-view based on state
 		if !a.detailsCommentsVisible {
@@ -1322,6 +1346,16 @@ func (a *App) updateAllPaneTitles() {
 
 	// Update Issues pane titles
 	isIssuesFocused := a.focusedPane == FocusIssues
+
+	if a.isInboxMode {
+		if isIssuesFocused {
+			a.notificationsTable.SetTitle(" ▶ Inbox ")
+			a.notificationsTable.SetTitleColor(a.theme.Accent)
+		} else {
+			a.notificationsTable.SetTitle(" Inbox ")
+			a.notificationsTable.SetTitleColor(a.theme.Foreground)
+		}
+	}
 
 	// Update My Issues table title
 	if len(a.myIssueRows) > 0 {
@@ -1596,6 +1630,9 @@ func (a *App) refreshIssuesWithFocusChange(allowFocusChange bool, issueID ...str
 
 // updateIssuesColumnLayout updates the issues column flex to show/hide My Issues table.
 func (a *App) updateIssuesColumnLayout() {
+	if a.isInboxMode {
+		return
+	}
 	a.issuesColumn.Clear()
 
 	// Add My Issues table if there are any
@@ -1978,8 +2015,26 @@ func (a *App) toggleStageCollapsed(stage string) {
 
 // onNavigationSelected handles when a navigation item is selected.
 func (a *App) onNavigationSelected(node *NavigationNode) {
-	logger.Debug("tui.app: navigation selected node_id=%s node_text=%s is_team=%v is_project=%v", node.ID, node.Text, node.IsTeam, node.IsProject)
+	logger.Debug("tui.app: navigation selected node_id=%s node_text=%s is_team=%v is_project=%v is_inbox=%v", node.ID, node.Text, node.IsTeam, node.IsProject, node.IsInbox)
 	a.selectedNavigation = node
+
+	if node.IsInbox {
+		go func() {
+			a.app.QueueUpdateDraw(func() {
+				a.enterInboxMode()
+			})
+			a.refreshNotifications()
+		}()
+		return
+	}
+
+	if a.isInboxMode {
+		go func() {
+			a.app.QueueUpdateDraw(func() {
+				a.exitInboxMode()
+			})
+		}()
+	}
 
 	// Update selected team/project
 	if node.IsTeam {
@@ -2004,6 +2059,42 @@ func (a *App) onNavigationSelected(node *NavigationNode) {
 	// Refresh issues for the new selection - run in goroutine to avoid blocking
 	// the tview callback (QueueUpdateDraw deadlocks if called from within a callback)
 	go a.refreshIssuesWithFocusChange(false)
+}
+
+// enterInboxMode switches the center column to show notifications.
+func (a *App) enterInboxMode() {
+	a.isInboxMode = true
+	a.selectedNotification = nil
+	a.issuesColumn.Clear()
+	a.issuesColumn.AddItem(a.notificationsTable, 0, 1, false)
+	a.setDetailsCommentsVisibility(false)
+	a.detailsDescriptionView.SetText(fmt.Sprintf("%sSelect a notification to preview it.[-]", a.themeTags.SecondaryText))
+	a.focusedPane = FocusIssues
+	a.updateFocus()
+}
+
+// exitInboxMode restores the center column to show issues.
+func (a *App) exitInboxMode() {
+	a.isInboxMode = false
+	a.updateIssuesColumnLayout()
+	a.focusedPane = FocusIssues
+	a.updateFocus()
+}
+
+// refreshNotifications fetches notifications and updates the UI.
+func (a *App) refreshNotifications() {
+	ctx := context.Background()
+	notifications, err := a.api.FetchNotifications(ctx)
+	a.app.QueueUpdateDraw(func() {
+		if err != nil {
+			logger.ErrorWithErr(err, "tui.app: failed to fetch notifications")
+			a.updateStatusBarWithError(err)
+			return
+		}
+		a.notifications = notifications
+		a.renderNotificationsTable()
+		a.updateStatusBar()
+	})
 }
 
 // setSearchQuery sets the search query and refreshes issues.
@@ -2035,7 +2126,9 @@ func (a *App) updateStatusBar() {
 	case FocusNavigation:
 		helpText = fmt.Sprintf("%s↑↓: navigate | Enter: select | Tab/→/l: next pane | Shift+Tab/←/h: prev pane | :: palette | /: search | q: quit[-]", keyColor)
 	case FocusIssues:
-		if a.multiSelectActive {
+		if a.isInboxMode {
+			helpText = fmt.Sprintf("%sj/k: navigate | Enter/o: open in browser | Tab/→/l: next pane | :: palette | q: quit[-]", keyColor)
+		} else if a.multiSelectActive {
 			helpText = fmt.Sprintf("%sj/k: extend selection | s: change status | m: assign to me | u: unassign | V/Esc: exit select (%d selected)[-]", keyColor, len(a.multiSelectIDs))
 		} else {
 			helpText = fmt.Sprintf("%sj/k: navigate | gg/G: top/bottom | V: multi-select | Space/Enter: expand/collapse | Tab/→/l: next pane | :: palette | /: search | q: quit[-]", keyColor)
@@ -2074,12 +2167,22 @@ func (a *App) updateStatusBar() {
 		searchText = fmt.Sprintf("%s🔍 %s[-]", a.themeTags.Warning, a.searchQuery)
 	}
 
-	a.issuesMu.RLock()
-	issuesLen := len(a.issues)
-	a.issuesMu.RUnlock()
-	statusText := fmt.Sprintf("%s%d issues[-]", a.themeTags.Accent, issuesLen)
-	if issuesLen == 0 {
-		statusText = fmt.Sprintf("%sNo issues[-]", a.themeTags.SecondaryText)
+	var statusText string
+	if a.isInboxMode {
+		n := len(a.notifications)
+		if n == 0 {
+			statusText = fmt.Sprintf("%sNo notifications[-]", a.themeTags.SecondaryText)
+		} else {
+			statusText = fmt.Sprintf("%s%d notifications[-]", a.themeTags.Accent, n)
+		}
+	} else {
+		a.issuesMu.RLock()
+		issuesLen := len(a.issues)
+		a.issuesMu.RUnlock()
+		statusText = fmt.Sprintf("%s%d issues[-]", a.themeTags.Accent, issuesLen)
+		if issuesLen == 0 {
+			statusText = fmt.Sprintf("%sNo issues[-]", a.themeTags.SecondaryText)
+		}
 	}
 
 	sep := fmt.Sprintf("%s | [-]", a.themeTags.Border)
