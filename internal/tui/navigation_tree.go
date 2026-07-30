@@ -13,6 +13,7 @@ type NavigationNode struct {
 	IsTeam    bool
 	IsProject bool
 	IsStatus  bool
+	IsInbox   bool
 	StateID   string
 	StateName string
 }
