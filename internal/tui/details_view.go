@@ -283,6 +283,65 @@ func (a *App) updateDetailsView() {
 	}
 }
 
+// updateDetailsViewForNotification renders a notification's details in the details pane.
+func (a *App) updateDetailsViewForNotification(n *linearapi.Notification) {
+	a.setDetailsCommentsVisibility(false)
+
+	keyColor := a.themeTags.SecondaryText
+	valColor := a.themeTags.Foreground
+	accentColor := a.themeTags.Accent
+	dividerColor := a.themeTags.Border
+	sectionGap := a.density.DetailsSectionGap
+
+	var lines []string
+
+	typeLabel := formatNotificationType(n.Type)
+	readStatus := "Unread"
+	if n.ReadAt != nil {
+		readStatus = "Read"
+	}
+
+	lines = append(lines, fmt.Sprintf("%s%s[-]  %s(%s)[-]", accentColor, typeLabel, keyColor, readStatus))
+	for i := 0; i < sectionGap; i++ {
+		lines = append(lines, "")
+	}
+
+	if n.IssueIdentifier != "" {
+		lines = append(lines, fmt.Sprintf("%sIssue:[-]    %s%s[-]", keyColor, accentColor, n.IssueIdentifier))
+	}
+	if n.IssueTitle != "" {
+		lines = append(lines, fmt.Sprintf("%sTitle:[-]    %s%s[-]", keyColor, valColor, n.IssueTitle))
+	}
+	if n.IssueState != "" {
+		lines = append(lines, fmt.Sprintf("%sState:[-]    %s%s[-]", keyColor, valColor, n.IssueState))
+	}
+	if n.IssueAssignee != "" {
+		lines = append(lines, fmt.Sprintf("%sAssignee:[-] %s%s[-]", keyColor, valColor, n.IssueAssignee))
+	}
+	if n.ActorName != "" {
+		lines = append(lines, fmt.Sprintf("%sFrom:[-]     %s%s[-]", keyColor, valColor, n.ActorName))
+	}
+	if !n.CreatedAt.IsZero() {
+		lines = append(lines, fmt.Sprintf("%sTime:[-]     %s%s[-]", keyColor, valColor, n.CreatedAt.Format("Jan 2, 2006 3:04 PM")))
+	}
+
+	for i := 0; i < sectionGap; i++ {
+		lines = append(lines, "")
+	}
+	lines = append(lines, fmt.Sprintf("%s────────────────────────────────────────[-]", dividerColor))
+	for i := 0; i < sectionGap; i++ {
+		lines = append(lines, "")
+	}
+
+	if n.IssueURL != "" {
+		lines = append(lines, fmt.Sprintf("%sPress %so[-]%s or %sEnter[-]%s to open in browser.[-]", keyColor, accentColor, keyColor, accentColor, keyColor))
+	}
+
+	a.detailsDescriptionView.Clear()
+	a.detailsDescriptionView.SetText(strings.Join(lines, "\n"))
+	a.detailsDescriptionView.ScrollToBeginning()
+}
+
 // buildDetailsTextLines builds a slice of plain-text lines from an issue for cursor mode.
 func buildDetailsTextLines(issue *linearapi.Issue) []string {
 	if issue == nil {
