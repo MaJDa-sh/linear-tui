@@ -151,6 +151,23 @@ type WorkflowState struct {
 	TeamID   string
 }
 
+// Notification represents a Linear notification.
+type Notification struct {
+	ID              string
+	Type            string
+	ReadAt          *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	IssueID         string
+	IssueIdentifier string
+	IssueTitle      string
+	IssueState      string
+	IssuePriority   int
+	IssueAssignee   string
+	IssueURL        string
+	ActorName       string
+}
+
 // IssueLabel represents a label that can be applied to issues.
 type IssueLabel struct {
 	ID    string
