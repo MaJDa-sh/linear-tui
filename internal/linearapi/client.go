@@ -240,10 +240,11 @@ type IssuePage struct {
 
 // FetchIssuesParams contains parameters for fetching issues.
 type FetchIssuesParams struct {
-	TeamID    string
-	ProjectID string
-	StateID   string
-	Search    string
+	TeamID     string
+	ProjectID  string
+	StateID    string
+	AssigneeID string // if set, only issues assigned to this user are returned
+	Search     string
 	// OrderBy specifies the sort order. Valid API values are "updatedAt" and "createdAt".
 	// "priority" is also supported and will be sorted client-side after fetching.
 	OrderBy string
@@ -532,6 +533,9 @@ func buildBaseIssueFilter(params FetchIssuesParams) IssueFilter {
 	}
 	if params.StateID != "" {
 		filter["state"] = map[string]interface{}{"id": map[string]interface{}{"eq": params.StateID}}
+	}
+	if params.AssigneeID != "" {
+		filter["assignee"] = map[string]interface{}{"id": map[string]interface{}{"eq": params.AssigneeID}}
 	}
 	return filter
 }
