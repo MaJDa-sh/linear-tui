@@ -232,7 +232,8 @@ func (a *App) loadInitialData() {
 		// Fetch teams and build navigation
 		a.loadNavigationData(ctx)
 
-		// Load issues for initial view
+		// Load issues — default nav is "My Issues" so only the current user's
+		// issues are fetched, making startup fast.
 		a.refreshIssues()
 	}()
 }
@@ -504,12 +505,19 @@ func (a *App) rebuildNavigationTree(teams []linearapi.Team) {
 		SetColor(a.theme.Accent).
 		SetSelectable(false)
 
-	// Add "All Issues" at the top
-	allIssues := tview.NewTreeNode("All Issues").
+	// My Issues is the default — only fetches issues assigned to the current user.
+	myIssuesNode := tview.NewTreeNode("My Issues").
 		SetColor(a.theme.Foreground).
-		SetReference(&NavigationNode{ID: "all", Text: "All Issues"}).
+		SetReference(&NavigationNode{ID: "my", Text: "My Issues", IsMyIssues: true}).
 		SetExpanded(true)
-	root.AddChild(allIssues)
+	root.AddChild(myIssuesNode)
+
+	// Other Issues loads separately, keeping startup fast.
+	otherIssuesNode := tview.NewTreeNode("Other Issues").
+		SetColor(a.theme.Foreground).
+		SetReference(&NavigationNode{ID: "other", Text: "Other Issues", IsOtherIssues: true}).
+		SetExpanded(true)
+	root.AddChild(otherIssuesNode)
 
 	// Add "Inbox" node
 	inboxNode := tview.NewTreeNode("Inbox").
@@ -537,8 +545,8 @@ func (a *App) rebuildNavigationTree(teams []linearapi.Team) {
 	}
 
 	a.navigationTree.SetRoot(root)
-	a.navigationTree.SetCurrentNode(allIssues)
-	a.selectedNavigation = &NavigationNode{ID: "all", Text: "All Issues"}
+	a.navigationTree.SetCurrentNode(myIssuesNode)
+	a.selectedNavigation = &NavigationNode{ID: "my", Text: "My Issues", IsMyIssues: true}
 }
 
 // onTeamExpanded loads projects for a team when it's expanded.
@@ -1537,9 +1545,13 @@ func (a *App) refreshIssuesWithFocusChange(allowFocusChange bool, issueID ...str
 			OrderBy: string(a.sortField),
 		}
 
-		// Apply team/project/state filter based on navigation selection
+		// Apply team/project/state/assignee filter based on navigation selection
 		if a.selectedNavigation != nil {
 			switch {
+			case a.selectedNavigation.IsMyIssues:
+				if a.currentUser != nil {
+					params.AssigneeID = a.currentUser.ID
+				}
 			case a.selectedNavigation.IsStatus:
 				params.TeamID = a.selectedNavigation.TeamID
 				params.StateID = a.selectedNavigation.StateID
@@ -1549,7 +1561,7 @@ func (a *App) refreshIssuesWithFocusChange(allowFocusChange bool, issueID ...str
 				params.TeamID = a.selectedNavigation.TeamID
 				params.ProjectID = a.selectedNavigation.ID
 			}
-			// If "All Issues", no team/project filter
+			// IsOtherIssues: no filter — fetch all, display only other section
 		}
 
 		fetchPage := a.fetchIssuesPage
@@ -1636,22 +1648,30 @@ func (a *App) refreshIssuesWithFocusChange(allowFocusChange bool, issueID ...str
 	})
 }
 
-// updateIssuesColumnLayout updates the issues column flex to show/hide My Issues table.
+// updateIssuesColumnLayout updates the issues column flex based on the active navigation node.
+// "My Issues" shows only myIssuesTable, "Other Issues" shows only otherIssuesTable,
+// and team/project/status views show both tables.
 func (a *App) updateIssuesColumnLayout() {
 	if a.isInboxMode {
 		return
 	}
 	a.issuesColumn.Clear()
 
-	// Add My Issues table if there are any
-	if len(a.myIssueRows) > 0 {
+	nav := a.selectedNavigation
+
+	switch {
+	case nav != nil && nav.IsMyIssues:
 		a.issuesColumn.AddItem(a.myIssuesTable, 0, 1, false)
+	case nav != nil && nav.IsOtherIssues:
+		a.issuesColumn.AddItem(a.otherIssuesTable, 0, 1, false)
+	default:
+		// Team/project/status/all views: show both sections
+		if len(a.myIssueRows) > 0 {
+			a.issuesColumn.AddItem(a.myIssuesTable, 0, 1, false)
+		}
+		a.issuesColumn.AddItem(a.otherIssuesTable, 0, 1, false)
 	}
 
-	// Always add Other Issues table
-	a.issuesColumn.AddItem(a.otherIssuesTable, 0, 1, false)
-
-	// Update all pane titles to reflect current state
 	a.updateAllPaneTitles()
 }
 

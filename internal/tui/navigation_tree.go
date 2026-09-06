@@ -6,16 +6,18 @@ import (
 
 // NavigationNode represents a node in the navigation tree.
 type NavigationNode struct {
-	ID        string
-	Text      string
-	TeamID    string // For team, project, and status nodes
-	Children  []*NavigationNode
-	IsTeam    bool
-	IsProject bool
-	IsStatus  bool
-	IsInbox   bool
-	StateID   string
-	StateName string
+	ID           string
+	Text         string
+	TeamID       string // For team, project, and status nodes
+	Children     []*NavigationNode
+	IsTeam       bool
+	IsProject    bool
+	IsStatus     bool
+	IsInbox      bool
+	IsMyIssues   bool // My Issues: fetch only issues assigned to the current user
+	IsOtherIssues bool // Other Issues: fetch all issues, show only the non-mine section
+	StateID      string
+	StateName    string
 }
 
 // buildNavigationTree creates and configures the navigation tree widget.
