@@ -82,8 +82,9 @@ type App struct {
 	myIDToIssue    map[string]*linearapi.Issue // Quick lookup by issue ID for "My Issues"
 	otherIssueRows []IssueRow                  // Flattened rows for "Other Issues" table
 	otherIDToIssue map[string]*linearapi.Issue // Quick lookup by issue ID for "Other Issues"
-	expandedState  map[string]bool             // Expanded state for parent issues (shared across sections)
-	collapsedStages map[string]bool            // Collapsed state for stage (workflow state) groups
+	expandedState   map[string]bool // Expanded state for parent issues (shared across sections)
+	collapsedStages map[string]bool // Collapsed state for stage (workflow state) groups
+	uiStatePath     string          // Path to ui_state.json for persisting collapsedStages
 
 	// Filter/sort state
 	searchQuery string
@@ -159,6 +160,12 @@ func NewApp(api *linearapi.Client, cfg config.Config, templates []config.AgentPr
 	theme := ResolveTheme(cfg.Theme)
 	density := ResolveDensity(cfg.Density)
 
+	uiStatePath, _ := config.UIStateFilePath()
+	uiState, err := config.LoadUIState(uiStatePath)
+	if err != nil {
+		logger.Warning("tui.app: failed to load ui state error=%v", err)
+	}
+
 	app := &App{
 		app:                  tview.NewApplication(),
 		api:                  api,
@@ -171,12 +178,13 @@ func NewApp(api *linearapi.Client, cfg config.Config, templates []config.AgentPr
 		focusedPane:          FocusNavigation,
 		sortField:            SortByUpdatedAt,
 		expandedState:        make(map[string]bool),
-		collapsedStages:      make(map[string]bool),
+		collapsedStages:      uiState.CollapsedStages,
+		uiStatePath:          uiStatePath,
 		multiSelectIDs:       make(map[string]bool),
 		idToIssue:            make(map[string]*linearapi.Issue),
 		myIDToIssue:          make(map[string]*linearapi.Issue),
 		otherIDToIssue:       make(map[string]*linearapi.Issue),
-		activeIssuesSection:  IssuesSectionOther, // Default to Other section
+		activeIssuesSection:  IssuesSectionMy, // Default to My Issues section
 		detailsVisualStart:   -1,
 		agentPromptTemplates: templates,
 	}
@@ -1966,6 +1974,13 @@ func (a *App) toggleStageCollapsed(stage string) {
 	} else {
 		a.collapsedStages[stage] = true
 	}
+
+	go func() {
+		state := config.UIState{CollapsedStages: a.collapsedStages}
+		if err := config.SaveUIState(a.uiStatePath, state); err != nil {
+			logger.Warning("tui.app: failed to save ui state error=%v", err)
+		}
+	}()
 
 	// Preserve the currently selected issue.
 	var targetIssueID string
